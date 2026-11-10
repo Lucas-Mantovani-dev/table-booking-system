@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from backend import services
+from backend import services, models
 
 app = FastAPI()
 
@@ -17,3 +17,6 @@ def get_upcoming():
 def get_bookings():
     return services.all_bookings()
 
+@app.post("/booking_availability")
+def booking_availability(request: models.BookingCheck):
+    services.booking_options(request)

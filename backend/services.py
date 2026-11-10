@@ -212,3 +212,13 @@ def all_bookings() -> list:
 
     return bookings_list
 
+def booking_options(request):
+    database.db_init()
+    option_list = []
+
+    with closing(sqlite3.connect("restaurant.db")) as conn:
+        with conn:
+            cursor = conn.cursor()
+
+            if request.booking_type == "advance":
+                
