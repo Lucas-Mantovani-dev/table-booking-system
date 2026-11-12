@@ -4,6 +4,22 @@ from contextlib import closing
 from datetime import datetime, timedelta
 import sqlite3
 
+# RECEIVES A strftime DATETIME AND ROUND UP IF ITS >= 5 ELSE ROUND DOWN
+# RETURNS THE ROUNDED DATETIME
+def round_minutes(booking_datetime: str) -> str:
+    str_format = "%Y-%m-%d %H:%M:%S"
+    booking_datetime_object = datetime.strptime(booking_datetime, str_format)
+    booking_datetime_object = booking_datetime_object.replace(second=0, microsecond=0)
+
+    remainder = booking_datetime_object.minute % 10
+
+    if remainder >= 5:
+        booking_datetime_object = booking_datetime_object + timedelta(minutes=(10 - remainder))
+    else:
+        booking_datetime_object = booking_datetime_object - timedelta(minutes=remainder)
+
+    return booking_datetime_object.strftime("%Y-%m-%d %H:%M:%S")
+
 # CHECKS TABLE'S AVAILABILITY AGAINST THEIR NEXT BOOKING
 # RETURNS AN INTEGER VALUE WHICH IF IT'S 0 OR NEGATIVE MEANS THAT TABLE IS CURRENTLY RESERVED, ELSE IT'S AVAILABLE
 def check_availability(
@@ -214,11 +230,47 @@ def all_bookings() -> list:
 
 def booking_options(request):
     database.db_init()
-    option_list = []
+    str_format = "%Y-%m-%d %H:%M:%S"
+    options_list = []
+    candidates_list = []
+
+    request.booking_datetime = round_minutes(request.booking_datetime)
 
     with closing(sqlite3.connect("restaurant.db")) as conn:
         with conn:
             cursor = conn.cursor()
 
             if request.booking_type == "advance":
-                
+                booking_datetime_object = datetime.strptime(request.booking_datetime, str_format)
+
+                for interval in range(-30, 61, 10):
+                    candidate_time = booking_datetime_object + timedelta(minutes=interval)
+                    candidate_time = candidate_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                    cursor.execute(
+                        """SELECT table_number FROM bookings
+                        WHERE ? BETWEEN booking_datetime AND estimated_departure
+                        AND booking_status IN (?, ?)""",
+                        (candidate_time, "waiting", "ongoing")
+                    )
+                    tables_not_available = cursor.fetchall()
+
+                    if not tables_not_available:
+                        candidates_list.append(
+                            {
+                                "candidate_time": candidate_time,
+                                "tables_not_available": None
+                            }
+                        )
+
+                    else:
+                        tna_list = []
+                        for tna in tables_not_available:
+                            tna_list.append(tna[0])
+
+                        candidates_list.append(
+                            {
+                                "candidate_time": candidate_time,
+                                "tables_not_available": tna_list
+                            }
+                        )
