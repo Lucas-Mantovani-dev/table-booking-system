@@ -19,4 +19,7 @@ def get_bookings():
 
 @app.post("/booking_availability")
 def booking_availability(request: models.BookingCheck):
-    services.booking_options(request)
+    if request.booking_type == "advance":
+        return services.advance_booking_options(request)
+    elif request.booking_type == "walk_in":
+        return services.walk_in_booking_options(request)

@@ -6,15 +6,19 @@ import sqlite3
 
 # RECEIVES A strftime DATETIME AND ROUND UP IF ITS >= 5 ELSE ROUND DOWN
 # RETURNS THE ROUNDED DATETIME
-def round_minutes(booking_datetime: str) -> str:
+def round_minutes(booking_datetime: str, walk_in: bool = False) -> str:
     str_format = "%Y-%m-%d %H:%M:%S"
     booking_datetime_object = datetime.strptime(booking_datetime, str_format)
     booking_datetime_object = booking_datetime_object.replace(second=0, microsecond=0)
 
     remainder = booking_datetime_object.minute % 10
 
-    if remainder >= 5:
-        booking_datetime_object = booking_datetime_object + timedelta(minutes=(10 - remainder))
+    if not walk_in:
+        if remainder >= 5:
+            booking_datetime_object = booking_datetime_object + timedelta(minutes=(10 - remainder))
+        else:
+            booking_datetime_object = booking_datetime_object - timedelta(minutes=remainder)
+
     else:
         booking_datetime_object = booking_datetime_object - timedelta(minutes=remainder)
 
@@ -23,23 +27,28 @@ def round_minutes(booking_datetime: str) -> str:
 # CHECKS TABLE'S AVAILABILITY AGAINST THEIR NEXT BOOKING
 # RETURNS AN INTEGER VALUE WHICH IF IT'S 0 OR NEGATIVE MEANS THAT TABLE IS CURRENTLY RESERVED, ELSE IT'S AVAILABLE
 def check_availability(
-        current_datetime: str,
+        start_datetime: str,
         booking_datetime: str,
-        customer_party: int | None = None
+        party_size: int
 ) -> int:
-    if customer_party in (1, 2):
-        estimated_dining = 70
-    elif customer_party in (3, 4):
-        estimated_dining = 80
-    elif customer_party in (5, 6):
-        estimated_dining = 110
-    elif customer_party in (7, 8):
-        estimated_dining = 130
+    if 1 <= party_size <= 8:
+        if party_size in (1, 2):
+            estimated_dining = 70
+        elif party_size in (3, 4):
+            estimated_dining = 80
+        elif party_size in (5, 6):
+            estimated_dining = 110
+        else:
+            estimated_dining = 130
     else:
-        estimated_dining = 70
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid party size!"
+        )
+    
     str_format = "%Y-%m-%d %H:%M:%S"
 
-    current_object = datetime.strptime(current_datetime, str_format)
+    current_object = datetime.strptime(start_datetime, str_format)
     booking_object = datetime.strptime(booking_datetime, str_format)
 
     waiting_starts = booking_object - timedelta(minutes=estimated_dining)
@@ -49,7 +58,7 @@ def check_availability(
 
 # GATHER TABLES DATA FROM THE "TABLES" TABLE
 # RETURNS A LIST OF TABLES WHICH EACH TABLE IS A DICT WITH table_number AND table_seats
-def get_tables() -> list:
+def get_tables(party_size: int = 1) -> list:
     database.db_init()
 
     with closing(sqlite3.connect("restaurant.db")) as conn:
@@ -57,7 +66,9 @@ def get_tables() -> list:
             cursor = conn.cursor()
 
             cursor.execute(
-                """SELECT * FROM tables"""
+                """SELECT * FROM tables
+                WHERE table_seats >= ?""",
+                (party_size,)
             )
             query_outcome = cursor.fetchall()
 
@@ -82,10 +93,13 @@ def get_tables() -> list:
 
 # GATHER DEEPER DATA FROM EACH TABLE
 # RETURNS SAME LIST PROVIDED BUT WITH MORE DATA IN IT
-def tables_info(tables_list: list) -> list:
+def tables_info(tables_list: list, start_datetime: str | None = None, party_size: int = 1) -> list:
     database.db_init()
-    now = datetime.now()
-    formatted_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
+    if not start_datetime:
+        now = datetime.now()
+        formatted_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        formatted_datetime = start_datetime
 
     if not tables_list:
         raise HTTPException(
@@ -100,16 +114,29 @@ def tables_info(tables_list: list) -> list:
 
                 for tables in tables_list:
                     cursor.execute(
-                        """SELECT booking_number, estimated_departure, booking_datetime
+                        """SELECT booking_number, estimated_departure, booking_datetime, booking_status
                         FROM bookings
-                        WHERE table_number = ? AND (booking_status = ? OR booking_status = ?)
+                        WHERE booking_datetime < ? AND table_number = ? AND (booking_status = ? OR booking_status = ?)
                         ORDER BY booking_datetime ASC
                         LIMIT 1""",
-                        (tables[0], "waiting", "ongoing")
+                        (formatted_datetime, tables[0], "waiting", "ongoing")
+                    )
+                    last_booking = cursor.fetchone()
+
+                    cursor.execute(
+                        """SELECT booking_number, estimated_departure, booking_datetime, booking_status
+                        FROM bookings
+                        WHERE booking_datetime >= ? AND table_number = ? AND (booking_status = ? OR booking_status = ?)
+                        ORDER BY booking_datetime ASC
+                        LIMIT 1""",
+                        (formatted_datetime, tables[0], "waiting", "ongoing")
                     )
                     query_outcome = cursor.fetchone()
 
-                    if not query_outcome:
+                    min_to_next = check_availability(formatted_datetime, query_outcome[2], party_size)
+                    min_to_last = check_availability(last_booking[1], formatted_datetime, party_size)
+
+                    if not query_outcome and min_to_last > 0:
                         tables.update(
                             {
                                 "table_status": "available",
@@ -119,31 +146,39 @@ def tables_info(tables_list: list) -> list:
                         )
 
                     else:
-                        min_to_next = check_availability(formatted_datetime, query_outcome[2])
-
-                        if min_to_next <= 0:
+                        if query_outcome[3] == "ongoing":
                             tables.update(
                                 {
-                                    "table_status": "waiting",
+                                    "table_status": "ongoing",
                                     "estimated_departure": query_outcome[1],
                                     "booking_number": query_outcome[0]
                                 }
                             )
 
                         else:
-                            tables.update(
-                                {
-                                    "table_status": "available",
-                                    "estimated_departure": None,
-                                    "booking_number": None
-                                }
-                            )
+                            if min_to_next <= 0:
+                                tables.update(
+                                    {
+                                        "table_status": "waiting",
+                                        "estimated_departure": query_outcome[1],
+                                        "booking_number": query_outcome[0]
+                                    }
+                                )
+
+                            elif min_to_next > 0 and min_to_last > 0:
+                                tables.update(
+                                    {
+                                        "table_status": "available",
+                                        "estimated_departure": None,
+                                        "booking_number": None
+                                    }
+                                )
 
                 return tables_list
 
 # GATHER TABLES LIST USING get_tables()
 # RETURNS EDITED TABLES LIST
-def next_upcoming() -> list:
+def next_upcoming(start_datetime: str | None = None) -> list:
     database.db_init()
     tables_list = get_tables()
 
@@ -154,14 +189,24 @@ def next_upcoming() -> list:
             for table in tables_list:
                 del table["table_seats"]
 
-                cursor.execute(
-                    """SELECT booking_number, booking_name, party_size, booking_datetime
-                    FROM bookings
-                    WHERE table_number = ? AND booking_status = ?
-                    ORDER BY booking_datetime ASC
-                    LIMIT 1""",
-                    (table[0], "waiting")
-                )
+                if not start_datetime:
+                    cursor.execute(
+                        """SELECT booking_number, booking_name, party_size, booking_datetime
+                        FROM bookings
+                        WHERE table_number = ? AND booking_status = ?
+                        ORDER BY booking_datetime ASC
+                        LIMIT 1""",
+                        (table[0], "waiting")
+                    )
+                else:
+                    cursor.execute(
+                        """SELECT booking_number, booking_name, party_size, booking_datetime
+                        FROM bookings
+                        WHERE table_number = ? AND booking_status = ? AND booking_datetime >= ?
+                        ORDER BY booking_datetime ASC
+                        LIMIT 1""",
+                        (table[0], "waiting", start_datetime)
+                    )
 
                 query_outcome = cursor.fetchone()
 
@@ -228,49 +273,139 @@ def all_bookings() -> list:
 
     return bookings_list
 
-def booking_options(request):
+# RETURNS THE TIME SCORING SYSTEM POINTS ACCORDING TO THE TIME DIFFERENCE
+def min_scoring(minutes_difference: int) -> int:
+    if minutes_difference == 0:
+        return 100
+    elif minutes_difference in (10, -10):
+        return 85
+    elif minutes_difference in (20, -20):
+        return 70
+    elif minutes_difference in (30, -30):
+        return 55
+    elif minutes_difference == -40:
+        return 40
+    elif minutes_difference == -50:
+        return 25
+    elif minutes_difference == -60:
+        return 10
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Scoring system error!"
+        )
+
+# SCORING SYSTEM FOR BEST BOOKING OPTIONS
+def scoring_system(candidates_list: list) -> list:
+    options_list = []
+    str_format = "%Y-%m-%d %H:%M:%S"
+    for candidate in candidates_list:
+
+        if candidate["table_seats"] < candidate["party_size"]:
+            ti = candidates_list.index(candidate)
+            del candidates_list[ti]
+            continue
+        elif (candidate["table_seats"] - candidate["party_size"]) in (0, 1):
+            candidate["score"] += 100
+        elif (candidate["table_seats"] - candidate["party_size"]) in (2, 3):
+            candidate["score"] += 50
+        elif (candidate["table_seats"] - candidate["party_size"]) in (4, 5):
+            candidate["score"] += 25
+        elif (candidate["table_seats"] - candidate["party_size"]) > 5:
+            ti = candidates_list.index(candidate)
+            del candidates_list[ti]
+            continue
+
+        booking_datetime_object = datetime.strptime(candidate["booking_datetime"], str_format)
+        candidate_datetime_object = datetime.strptime(candidate["candidate_datetime"], str_format)
+        min_diff = booking_datetime_object - candidate_datetime_object
+        min_diff = int(min_diff.total_seconds() // 60)
+        candidate["score"] += min_scoring(min_diff)
+
+    while len(options_list) < 5 or len(candidates_list) > 0:
+        option = {"score": 0}
+        for candidate in candidates_list:
+            if candidate["score"] >= option["score"]:
+                option = candidate
+                ti = candidates_list.index(candidate)
+                del candidates_list[ti]
+
+        options_list.append(option)
+
+    return options_list
+
+# GATHERS THE BEST ADVANCE BOOKING OPTIONS AND SEND THEM BACK TO FRONTEND IN A LIST
+def advance_booking_options(request):
     database.db_init()
     str_format = "%Y-%m-%d %H:%M:%S"
-    options_list = []
     candidates_list = []
+    suitable_tables = get_tables(request.party_size)
 
     request.booking_datetime = round_minutes(request.booking_datetime)
 
-    with closing(sqlite3.connect("restaurant.db")) as conn:
-        with conn:
-            cursor = conn.cursor()
+    booking_datetime_object = datetime.strptime(request.booking_datetime, str_format)
 
-            if request.booking_type == "advance":
-                booking_datetime_object = datetime.strptime(request.booking_datetime, str_format)
+    for interval in range(-30, 61, 10):
+        candidate_datetime = booking_datetime_object + timedelta(minutes=interval)
+        candidate_datetime = candidate_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
-                for interval in range(-30, 61, 10):
-                    candidate_time = booking_datetime_object + timedelta(minutes=interval)
-                    candidate_time = candidate_time.strftime("%Y-%m-%d %H:%M:%S")
+        temp_candidates_list = tables_info(suitable_tables, candidate_datetime, request.party_size)
 
-                    cursor.execute(
-                        """SELECT table_number FROM bookings
-                        WHERE ? BETWEEN booking_datetime AND estimated_departure
-                        AND booking_status IN (?, ?)""",
-                        (candidate_time, "waiting", "ongoing")
-                    )
-                    tables_not_available = cursor.fetchall()
+        for candidate in temp_candidates_list:
+            if candidate["table_status"] != "available":
+                ti = temp_candidates_list.index(candidate)
+                del temp_candidates_list[ti]
+                continue
 
-                    if not tables_not_available:
-                        candidates_list.append(
-                            {
-                                "candidate_time": candidate_time,
-                                "tables_not_available": None
-                            }
-                        )
+            else:
+                del candidate["estimated_departure"]
+                del candidate["booking_number"]
+                candidate.update(
+                    {
+                        "candidate_datetime": candidate_datetime,
+                        "booking_datetime": request.booking_datetime,
+                        "party_size": request.party_size,
+                        "score": 0
+                    }
+                )
+                candidates_list.append(candidate)
 
-                    else:
-                        tna_list = []
-                        for tna in tables_not_available:
-                            tna_list.append(tna[0])
+    return scoring_system(candidates_list)
 
-                        candidates_list.append(
-                            {
-                                "candidate_time": candidate_time,
-                                "tables_not_available": tna_list
-                            }
-                        )
+# GATHERS THE BEST WALK IN BOOKING OPTIONS AND SEND THEM BACK TO FRONTEND IN A LIST
+def walk_in_booking_options(request):
+    database.db_init()
+    str_format = "%Y-%m-%d %H:%M:%S"
+    candidates_list = []
+    suitable_tables = get_tables(request.party_size)
+
+    request.booking_datetime = round_minutes(request.booking_datetime, True)
+
+    booking_datetime_object = datetime.strptime(request.booking_datetime, str_format)
+
+    for interval in range(0, 5):
+        candidate_datetime = booking_datetime_object + timedelta(minutes=interval)
+        candidate_datetime = candidate_datetime.strftime("%Y-%m-%d %H:%M:%S")
+
+        temp_candidates_list = tables_info(suitable_tables, candidate_datetime, request.party_size)
+
+        for candidate in temp_candidates_list:
+            if candidate["table_status"] != "available":
+                ti = temp_candidates_list.index(candidate)
+                del temp_candidates_list[ti]
+                continue
+
+            else:
+                del candidate["estimated_departure"]
+                del candidate["booking_number"]
+                candidate.update(
+                    {
+                        "candidate_datetime": candidate_datetime,
+                        "booking_datetime": request.booking_datetime,
+                        "party_size": request.party_size,
+                        "score": 0
+                    }
+                )
+                candidates_list.append(candidate)
+
+    return scoring_system(candidates_list)
