@@ -249,7 +249,7 @@ def all_bookings() -> list:
 
             cursor.execute(
                 """SELECT * FROM bookings
-                WHERE bookings_status = ? AND booking_status = ?
+                WHERE booking_status IN (?, ?)
                 ORDER BY booking_datetime ASC""",
                 ("waiting", "ongoing")
             )
@@ -257,7 +257,7 @@ def all_bookings() -> list:
 
             cursor.execute(
                 """SELECT * FROM bookings
-                WHERE bookings_status = ? AND booking_status = ?
+                WHERE booking_status IN (?, ?)
                 ORDER BY booking_datetime DESC""",
                 ("finished", "cancelled")
             )
