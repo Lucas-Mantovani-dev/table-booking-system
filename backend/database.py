@@ -31,11 +31,14 @@ def db_init():
 
             conn.commit()
 
-            for table in tables_standard_seats:
-                cursor.execute(
-                    """INSERT INTO tables (table_seats)
-                    VALUES (?)""", (table,)
-                )
+            cursor.execute("SELECT * FROM tables")
+            tables_list = cursor.fetchall()
+            if not tables_list:
+                for table in tables_standard_seats:
+                    cursor.execute(
+                        """INSERT INTO tables (table_seats)
+                        VALUES (?)""", (table,)
+                    )
 
-            conn.commit()
-
+                conn.commit()
+            
