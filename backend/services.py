@@ -119,7 +119,7 @@ def tables_info(tables_list: list, start_datetime: str | None = None, party_size
                         WHERE booking_datetime < ? AND table_number = ? AND (booking_status = ? OR booking_status = ?)
                         ORDER BY booking_datetime ASC
                         LIMIT 1""",
-                        (formatted_datetime, tables[0], "waiting", "ongoing")
+                        (formatted_datetime, tables["table_number"], "waiting", "ongoing")
                     )
                     last_booking = cursor.fetchone()
 
@@ -129,12 +129,19 @@ def tables_info(tables_list: list, start_datetime: str | None = None, party_size
                         WHERE booking_datetime >= ? AND table_number = ? AND (booking_status = ? OR booking_status = ?)
                         ORDER BY booking_datetime ASC
                         LIMIT 1""",
-                        (formatted_datetime, tables[0], "waiting", "ongoing")
+                        (formatted_datetime, tables["table_number"], "waiting", "ongoing")
                     )
                     query_outcome = cursor.fetchone()
 
-                    min_to_next = check_availability(formatted_datetime, query_outcome[2], party_size)
-                    min_to_last = check_availability(last_booking[1], formatted_datetime, party_size)
+                    if not query_outcome:
+                        min_to_next = 200
+                    else:
+                        min_to_next = check_availability(formatted_datetime, query_outcome[2], party_size)
+
+                    if not last_booking:
+                        min_to_last = 200
+                    else:
+                        min_to_last = check_availability(last_booking[1], formatted_datetime, party_size)
 
                     if not query_outcome and min_to_last > 0:
                         tables.update(
