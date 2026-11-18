@@ -203,7 +203,7 @@ def next_upcoming(start_datetime: str | None = None) -> list:
                         WHERE table_number = ? AND booking_status = ?
                         ORDER BY booking_datetime ASC
                         LIMIT 1""",
-                        (table[0], "waiting")
+                        (table["table_number"], "waiting")
                     )
                 else:
                     cursor.execute(
