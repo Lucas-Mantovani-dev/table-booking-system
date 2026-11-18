@@ -95,6 +95,7 @@ def get_tables(party_size: int = 1) -> list:
 # RETURNS SAME LIST PROVIDED BUT WITH MORE DATA IN IT
 def tables_info(tables_list: list, start_datetime: str | None = None, party_size: int = 1) -> list:
     database.db_init()
+    tables_list = tables_list.copy()
     if not start_datetime:
         now = datetime.now()
         formatted_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -329,15 +330,21 @@ def scoring_system(candidates_list: list) -> list:
         min_diff = int(min_diff.total_seconds() // 60)
         candidate["score"] += min_scoring(min_diff)
 
-    while len(options_list) < 5 or len(candidates_list) > 0:
-        option = {"score": 0}
+    while len(options_list) != 5 and len(candidates_list) != 0:
+        candidate_index = 0
+        possible_cand = None
         for candidate in candidates_list:
-            if candidate["score"] >= option["score"]:
-                option = candidate
-                ti = candidates_list.index(candidate)
-                del candidates_list[ti]
+            if not possible_cand:
+                possible_cand = candidate.copy()
+                candidate_index = candidates_list.index(candidate)
+            else:
+                if candidate["score"] > possible_cand["score"]:
+                    possible_cand = candidate.copy()
+                    candidate_index = candidates_list.index(candidate)
 
-        options_list.append(option)
+        if possible_cand:
+            options_list.append(possible_cand)
+            del candidates_list[candidate_index]
 
     return options_list
 
@@ -375,8 +382,7 @@ def advance_booking_options(request):
                         "score": 0
                     }
                 )
-                candidates_list.append(candidate)
-
+                candidates_list.append(candidate.copy())
     return scoring_system(candidates_list)
 
 # GATHERS THE BEST WALK IN BOOKING OPTIONS AND SEND THEM BACK TO FRONTEND IN A LIST
